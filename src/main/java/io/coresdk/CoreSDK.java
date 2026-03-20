@@ -7,11 +7,15 @@ import io.coresdk.proto.AuthServiceGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.StatusRuntimeException;
+import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -61,9 +65,25 @@ public class CoreSDK {
             synchronized (this) {
                 if (grpcStub == null) {
                     String target = config.getEndpoint();
-                    grpcChannel = ManagedChannelBuilder.forTarget(target)
-                        .usePlaintext()
-                        .build();
+                    String certPath = config.getTls() != null ? config.getTls().getCertPath() : null;
+                    if (certPath != null && !certPath.isEmpty()) {
+                        try {
+                            SslContext sslCtx = GrpcSslContexts.forClient()
+                                .keyManager(new File(certPath), new File(config.getTls().getKeyPath()))
+                                .trustManager(new File(config.getTls().getCaPath()))
+                                .build();
+                            grpcChannel = NettyChannelBuilder.forTarget(target)
+                                .useTransportSecurity()
+                                .sslContext(sslCtx)
+                                .build();
+                        } catch (Exception e) {
+                            throw new RuntimeException("Failed to configure mTLS", e);
+                        }
+                    } else {
+                        grpcChannel = ManagedChannelBuilder.forTarget(target)
+                            .usePlaintext()
+                            .build();
+                    }
                     grpcStub = AuthServiceGrpc.newBlockingStub(grpcChannel);
                 }
             }
@@ -104,29 +124,93 @@ public class CoreSDK {
     private AuthDecision authorizeViaGrpc(String token, String resource, String action,
                                            MeterRegistry reg, Timer.Sample sample) throws Exception {
         AuthServiceGrpc.BlockingStub stub = getGrpcStub();
+        String tenantId = config.getTenantId() != null ? config.getTenantId() : "";
 
-        String requestJson = MAPPER.writeValueAsString(Map.of(
-            "token", token != null ? token : "",
-            "resource", resource != null ? resource : "",
-            "action", action != null ? action : "",
-            "tenant_id", config.getTenantId() != null ? config.getTenantId() : ""
-        ));
+        // Use Authorize RPC when resource+action are provided, else ValidateToken
+        boolean useAuthorize = resource != null && !resource.isEmpty()
+                            && action != null && !action.isEmpty();
 
-        byte[] responseBytes = stub.validateToken(requestJson.getBytes(StandardCharsets.UTF_8));
-        JsonNode json = MAPPER.readTree(responseBytes);
+        java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+        writeString(buf, 1, token);
+        if (useAuthorize) {
+            writeString(buf, 2, resource);
+            writeString(buf, 3, action);
+            writeString(buf, 4, tenantId);
+            byte[] responseBytes = stub.authorize(buf.toByteArray());
+            return decodeAuthorizeResponse(responseBytes, reg, sample);
+        } else {
+            writeString(buf, 2, tenantId);
+            byte[] responseBytes = stub.validateToken(buf.toByteArray());
+            return decodeValidateTokenResponse(responseBytes, reg, sample);
+        }
+    }
 
-        boolean valid = json.path("valid").asBoolean(false);
-        String subject = json.path("subject").asText("");
-        long expiresAt = json.path("expiresAt").asLong(0);
-
+    private AuthDecision decodeAuthorizeResponse(byte[] data, MeterRegistry reg, Timer.Sample sample) {
+        // Protobuf: field 1=allowed(varint), field 2=subject(string), field 3=roles(repeated string), field 4=reason(string)
+        boolean allowed = false;
+        String subject = "";
         List<String> roles = new ArrayList<>();
-        JsonNode rolesNode = json.get("roles");
-        if (rolesNode != null && rolesNode.isArray()) {
-            for (JsonNode r : rolesNode) {
-                roles.add(r.asText());
+        String reason = null;
+        int pos = 0;
+        while (pos < data.length) {
+            long[] tagResult = readVarint(data, pos);
+            long tag = tagResult[0];
+            pos = (int) tagResult[1];
+            int fieldNum = (int) (tag >>> 3);
+            int wireType = (int) (tag & 0x7);
+            if (wireType == 0) { // varint
+                long[] valResult = readVarint(data, pos);
+                pos = (int) valResult[1];
+                if (fieldNum == 1) allowed = valResult[0] != 0;
+            } else if (wireType == 2) { // length-delimited
+                long[] lenResult = readVarint(data, pos);
+                int len = (int) lenResult[0];
+                pos = (int) lenResult[1];
+                String s = new String(data, pos, len, StandardCharsets.UTF_8);
+                pos += len;
+                if (fieldNum == 2) subject = s;
+                else if (fieldNum == 3) roles.add(s);
+                else if (fieldNum == 4) reason = s;
             }
         }
+        Claims claims = new Claims(
+            subject.isEmpty() ? "unknown" : subject,
+            config.getTenantId(),
+            roles,
+            0L
+        );
+        if (sample != null) CoreSDKMetrics.recordAuthorize(reg, sample, allowed ? "allow" : "deny");
+        return new AuthDecision(allowed, claims, reason);
+    }
 
+    private AuthDecision decodeValidateTokenResponse(byte[] data, MeterRegistry reg, Timer.Sample sample) {
+        // Protobuf: field 1=valid(varint), field 2=subject(string), field 3=roles(repeated string), field 4=expiresAt(varint)
+        boolean valid = false;
+        String subject = "";
+        List<String> roles = new ArrayList<>();
+        long expiresAt = 0;
+        int pos = 0;
+        while (pos < data.length) {
+            long[] tagResult = readVarint(data, pos);
+            long tag = tagResult[0];
+            pos = (int) tagResult[1];
+            int fieldNum = (int) (tag >>> 3);
+            int wireType = (int) (tag & 0x7);
+            if (wireType == 0) {
+                long[] valResult = readVarint(data, pos);
+                pos = (int) valResult[1];
+                if (fieldNum == 1) valid = valResult[0] != 0;
+                else if (fieldNum == 4) expiresAt = valResult[0];
+            } else if (wireType == 2) {
+                long[] lenResult = readVarint(data, pos);
+                int len = (int) lenResult[0];
+                pos = (int) lenResult[1];
+                String s = new String(data, pos, len, StandardCharsets.UTF_8);
+                pos += len;
+                if (fieldNum == 2) subject = s;
+                else if (fieldNum == 3) roles.add(s);
+            }
+        }
         Claims claims = new Claims(
             subject.isEmpty() ? "unknown" : subject,
             config.getTenantId(),
@@ -234,15 +318,34 @@ public class CoreSDK {
         AuthServiceGrpc.BlockingStub stub = getGrpcStub();
 
         String inputJson = MAPPER.writeValueAsString(input != null ? input : Map.of());
-        String requestJson = MAPPER.writeValueAsString(Map.of(
-            "rule", rule != null ? rule : "",
-            "input_json", inputJson,
-            "tenant_id", config.getTenantId() != null ? config.getTenantId() : ""
-        ));
+        String tenantId = config.getTenantId() != null ? config.getTenantId() : "";
 
-        byte[] responseBytes = stub.evaluatePolicy(requestJson.getBytes(StandardCharsets.UTF_8));
-        JsonNode json = MAPPER.readTree(responseBytes);
-        boolean result = json.path("result").asBoolean(false);
+        java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+        writeString(buf, 1, rule);
+        writeString(buf, 2, inputJson);
+        writeString(buf, 3, tenantId);
+
+        byte[] responseBytes = stub.evaluatePolicy(buf.toByteArray());
+        // Decode protobuf: field 1=result(varint bool)
+        boolean result = false;
+        int pos = 0;
+        while (pos < responseBytes.length) {
+            long[] tagResult = readVarint(responseBytes, pos);
+            long tag = tagResult[0];
+            pos = (int) tagResult[1];
+            int fieldNum = (int) (tag >>> 3);
+            int wireType = (int) (tag & 0x7);
+            if (wireType == 0) {
+                long[] valResult = readVarint(responseBytes, pos);
+                pos = (int) valResult[1];
+                if (fieldNum == 1) result = valResult[0] != 0;
+            } else if (wireType == 2) {
+                long[] lenResult = readVarint(responseBytes, pos);
+                int len = (int) lenResult[0];
+                pos = (int) lenResult[1];
+                pos += len; // skip unknown string fields
+            }
+        }
         if (sample != null) CoreSDKMetrics.recordPolicy(reg, sample, rule, result ? "allow" : "deny");
         return new PolicyResult(result, null);
     }
@@ -290,6 +393,36 @@ public class CoreSDK {
         }
         log.warn("[coresdk] evaluatePolicy fail-open: {}", e.getMessage());
         return new PolicyResult(true, "fail-open");
+    }
+
+    // ---- Protobuf wire-format helpers ----
+
+    private static void writeVarint(java.io.ByteArrayOutputStream out, long value) throws java.io.IOException {
+        while ((value & ~0x7FL) != 0) {
+            out.write((int) ((value & 0x7F) | 0x80));
+            value >>>= 7;
+        }
+        out.write((int) (value & 0x7F));
+    }
+
+    private static void writeString(java.io.ByteArrayOutputStream out, int fieldNum, String value) throws java.io.IOException {
+        if (value == null || value.isEmpty()) return;
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        writeVarint(out, ((long) fieldNum << 3) | 2L);
+        writeVarint(out, bytes.length);
+        out.write(bytes);
+    }
+
+    private static long[] readVarint(byte[] data, int pos) {
+        long result = 0;
+        int shift = 0;
+        while (pos < data.length) {
+            byte b = data[pos++];
+            result |= (long) (b & 0x7F) << shift;
+            if ((b & 0x80) == 0) break;
+            shift += 7;
+        }
+        return new long[]{result, pos};
     }
 
     public CoreSDKConfig getConfig() { return config; }

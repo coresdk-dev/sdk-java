@@ -55,6 +55,24 @@ public class InvoiceController {
 }
 ```
 
+## mTLS
+
+To enable mutual TLS between your application and the sidecar, set the following environment variables (or Spring properties):
+
+| Variable | Spring property | Description |
+|----------|----------------|-------------|
+| `CORESDK_TLS_CERT` | `coresdk.tls.cert` | Path to the client certificate (PEM) |
+| `CORESDK_TLS_KEY` | `coresdk.tls.key` | Path to the client private key (PEM) |
+| `CORESDK_TLS_CA` | `coresdk.tls.ca` | Path to the CA certificate (PEM) |
+
+```bash
+export CORESDK_TLS_CERT=/path/to/client.crt
+export CORESDK_TLS_KEY=/path/to/client.key
+export CORESDK_TLS_CA=/path/to/ca.crt
+```
+
+> **Note:** The Java SDK currently uses HTTP REST transport. mTLS support via gRPC (`AuthServiceGrpc.java`) is present but not yet wired. See the [core-sdk README](https://github.com/coresdk-dev/core-sdk#mtls-configuration) for certificate generation instructions.
+
 ## Auto-wired beans
 
 | Bean | Type | Description |

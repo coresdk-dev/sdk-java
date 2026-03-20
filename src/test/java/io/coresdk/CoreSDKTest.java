@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.concurrent.ExecutionException;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class CoreSDKTest {
 
@@ -48,6 +49,35 @@ class CoreSDKTest {
         assertEquals(401, pd.getStatus());
         assertEquals("Unauthorized", pd.getTitle());
         assertEquals("missing token", pd.getDetail());
+    }
+
+    @Test
+    void configFromEnvDefaults() {
+        CoreSDKConfig cfg = CoreSDKConfig.fromEnv();
+        assertNotNull(cfg);
+        assertEquals("localhost:50051", cfg.getEndpoint());
+        assertEquals("open", cfg.getFailMode());
+        assertNotNull(cfg.getTls());
+    }
+
+    @Test
+    void mockAuthorizeReturnsClaims() throws ExecutionException, InterruptedException {
+        Claims claims = new Claims("alice", "acme", List.of("admin", "viewer"), 9999L);
+        MockCoreSDK sdk = new MockCoreSDK(true, claims);
+        AuthDecision decision = sdk.authorize("token", "/api/orders", "GET").get();
+        assertTrue(decision.isAllowed());
+        assertEquals("alice", decision.getClaims().getSub());
+        assertEquals("acme", decision.getClaims().getTenantId());
+        assertEquals(List.of("admin", "viewer"), decision.getClaims().getRoles());
+    }
+
+    @Test
+    void failClosedThrowsOnError() {
+        CoreSDKConfig cfg = new CoreSDKConfig();
+        cfg.setFailMode("closed");
+        cfg.setEndpoint("localhost:1"); // unreachable
+        CoreSDK sdk = new CoreSDK(cfg);
+        assertThrows(Exception.class, () -> sdk.authorize("tok", "/x", "GET").join());
     }
 
     @Test

@@ -23,6 +23,12 @@ public class CoreSDKConfig {
         if (failMode != null) cfg.setFailMode(failMode);
         String cpUrl = System.getenv("CORESDK_CONTROL_PLANE_URL");
         if (cpUrl != null) cfg.setControlPlaneUrl(cpUrl);
+        String certFile = System.getenv("CORESDK_TLS_CERT_FILE");
+        if (certFile != null) {
+            cfg.getTls().setCertPath(certFile);
+            cfg.getTls().setKeyPath(System.getenv("CORESDK_TLS_KEY_FILE"));
+            cfg.getTls().setCaPath(System.getenv("CORESDK_TLS_CA_FILE"));
+        }
         return cfg;
     }
 
