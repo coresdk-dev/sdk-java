@@ -27,6 +27,19 @@ coresdk:
   fail-mode: open
 ```
 
+## Authorize requests
+
+```java
+@Autowired CoreSDK sdk;
+
+CompletableFuture<AuthDecision> decision = sdk.authorize(token, "/orders", "GET");
+decision.thenAccept(d -> {
+    if (d.isAllowed()) {
+        System.out.println("Allowed for " + d.getClaims().getSub());
+    }
+});
+```
+
 ## Usage
 
 ```java

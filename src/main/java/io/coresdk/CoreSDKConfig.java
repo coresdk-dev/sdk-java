@@ -12,7 +12,10 @@ public class CoreSDKConfig {
 
     public static CoreSDKConfig fromEnv() {
         CoreSDKConfig cfg = new CoreSDKConfig();
-        String ep = System.getenv("CORESDK_ENDPOINT");
+        // CORESDK_SIDECAR_ADDR is the canonical env var (matches Python, Go, Rust sidecar).
+        // CORESDK_ENDPOINT is accepted as a deprecated alias for backwards compatibility.
+        String ep = System.getenv("CORESDK_SIDECAR_ADDR");
+        if (ep == null) ep = System.getenv("CORESDK_ENDPOINT");
         if (ep != null) cfg.setEndpoint(ep);
         String tenant = System.getenv("CORESDK_TENANT_ID");
         if (tenant != null) cfg.setTenantId(tenant);

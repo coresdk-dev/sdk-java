@@ -30,6 +30,24 @@ public final class AuthServiceGrpc {
             .setResponseMarshaller(bytesMarshaller())
             .build();
 
+    private static final MethodDescriptor<byte[], byte[]> METHOD_AUTHORIZE =
+        MethodDescriptor.<byte[], byte[]>newBuilder()
+            .setType(MethodDescriptor.MethodType.UNARY)
+            .setFullMethodName(SERVICE_NAME + "/Authorize")
+            .setRequestMarshaller(bytesMarshaller())
+            .setResponseMarshaller(bytesMarshaller())
+            .build();
+
+    public static final String POLICY_SERVICE_NAME = "coresdk.v1.PolicyService";
+
+    private static final MethodDescriptor<byte[], byte[]> METHOD_EVALUATE_POLICY =
+        MethodDescriptor.<byte[], byte[]>newBuilder()
+            .setType(MethodDescriptor.MethodType.UNARY)
+            .setFullMethodName(POLICY_SERVICE_NAME + "/Evaluate")
+            .setRequestMarshaller(bytesMarshaller())
+            .setResponseMarshaller(bytesMarshaller())
+            .build();
+
     private static MethodDescriptor.Marshaller<byte[]> bytesMarshaller() {
         return new MethodDescriptor.Marshaller<byte[]>() {
             @Override
@@ -72,6 +90,28 @@ public final class AuthServiceGrpc {
         public byte[] validateToken(byte[] request) {
             return ClientCalls.blockingUnaryCall(
                 getChannel(), METHOD_VALIDATE_TOKEN, getCallOptions(), request);
+        }
+
+        /**
+         * Calls coresdk.v1.AuthService/Authorize with raw JSON bytes.
+         *
+         * @param request UTF-8 JSON bytes of an AuthorizeRequest object
+         * @return UTF-8 JSON bytes of an AuthorizeResponse object
+         */
+        public byte[] authorize(byte[] request) {
+            return ClientCalls.blockingUnaryCall(
+                getChannel(), METHOD_AUTHORIZE, getCallOptions(), request);
+        }
+
+        /**
+         * Calls coresdk.v1.PolicyService/Evaluate with raw JSON bytes.
+         *
+         * @param request UTF-8 JSON bytes of a PolicyEvaluateRequest object
+         * @return UTF-8 JSON bytes of a PolicyEvaluateResponse object
+         */
+        public byte[] evaluatePolicy(byte[] request) {
+            return ClientCalls.blockingUnaryCall(
+                getChannel(), METHOD_EVALUATE_POLICY, getCallOptions(), request);
         }
     }
 }
