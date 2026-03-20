@@ -2,7 +2,12 @@ package io.coresdk.autoconfigure;
 
 import io.coresdk.CoreSDK;
 import io.coresdk.CoreSDKConfig;
+import io.coresdk.metrics.CoreSDKMetrics;
+import io.coresdk.tracing.PIIMaskingSpanProcessor;
 import io.coresdk.web.CoreSDKFilter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.binder.MeterBinder;
+import io.opentelemetry.sdk.trace.SpanProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -19,6 +24,21 @@ public class CoreSDKAutoConfiguration {
     @ConditionalOnMissingBean
     public CoreSDK coreSDK(CoreSDKConfig config) {
         return new CoreSDK(config);
+    }
+
+    @Bean
+    @ConditionalOnClass(MeterRegistry.class)
+    @ConditionalOnMissingBean(CoreSDKMetrics.class)
+    public MeterBinder coreSDKMetrics(CoreSDK sdk, MeterRegistry registry) {
+        sdk.setMeterRegistry(registry);
+        return new CoreSDKMetrics();
+    }
+
+    @Bean
+    @ConditionalOnClass(SpanProcessor.class)
+    @ConditionalOnMissingBean(PIIMaskingSpanProcessor.class)
+    public PIIMaskingSpanProcessor piiMaskingSpanProcessor() {
+        return PIIMaskingSpanProcessor.create();
     }
 
     @Bean

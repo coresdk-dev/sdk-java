@@ -4,6 +4,7 @@ import io.coresdk.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 public class MockCoreSDK extends CoreSDK {
@@ -27,6 +28,11 @@ public class MockCoreSDK extends CoreSDK {
         authorizeCalls.add(token + ":" + resource + ":" + action);
         return CompletableFuture.completedFuture(
             new AuthDecision(defaultAllow, defaultClaims, null));
+    }
+
+    @Override
+    public CompletableFuture<PolicyResult> evaluatePolicy(String rule, Map<String, Object> input) {
+        return CompletableFuture.completedFuture(new PolicyResult(defaultAllow, null));
     }
 
     public List<String> getAuthorizeCalls() { return List.copyOf(authorizeCalls); }

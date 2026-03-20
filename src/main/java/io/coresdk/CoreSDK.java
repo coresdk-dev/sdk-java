@@ -1,5 +1,10 @@
 package io.coresdk;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.coresdk.metrics.CoreSDKMetrics;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -7,25 +12,14 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 /**
  * CoreSDK client. Obtain via {@link CoreSDK#fromEnv()} or Spring auto-configuration.
- *
- * <h3>Transport (Phase 1b)</h3>
- * <p>This client uses Java's {@link HttpClient} to POST JSON to the control plane's
- * HTTP API ({@code /api/v1/auth/validate}).  The control plane URL is read from the
- * {@code CORESDK_CONTROL_PLANE_URL} environment variable (e.g.
- * {@code http://localhost:8080}).  If the variable is not set the client fails-open
- * (or fails-closed when {@code CORESDK_FAIL_MODE=closed}).</p>
- *
- * <h3>TODO — Phase 2 GA</h3>
- * <p>Replace HTTP transport with gRPC using {@code io.coresdk.proto.AuthServiceGrpc}
- * over a {@code ManagedChannel} targeting the sidecar on port 50051.  The hand-written
- * stub in {@code AuthServiceGrpc} is already wired; buf Java codegen will replace it
- * once {@code protoc} is available in CI.</p>
  */
 public class CoreSDK {
 
@@ -35,10 +29,18 @@ public class CoreSDK {
         .connectTimeout(Duration.ofSeconds(5))
         .build();
 
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     private final CoreSDKConfig config;
+    private volatile MeterRegistry meterRegistry;
 
     public CoreSDK(CoreSDKConfig config) {
         this.config = config;
+    }
+
+    /** Inject a Micrometer {@link MeterRegistry}. Safe to call after construction. */
+    public void setMeterRegistry(MeterRegistry registry) {
+        this.meterRegistry = registry;
     }
 
     public static CoreSDK fromEnv() {
@@ -48,20 +50,14 @@ public class CoreSDK {
     /**
      * Authorize a request against the control plane.
      *
-     * <p>If {@code CORESDK_CONTROL_PLANE_URL} is not configured:
-     * <ul>
-     *   <li>fail-mode {@code open} — returns {@code AuthDecision(allowed=true, reason="no-control-plane")}</li>
-     *   <li>fail-mode {@code closed} — throws {@link CoreSDKException} (503)</li>
-     * </ul>
-     *
-     * <p>On any network / HTTP error the same fail-open / fail-closed logic applies.
-     *
      * @param token    raw Bearer token (without the "Bearer " prefix)
      * @param resource resource path or name being accessed
      * @param action   action being attempted (e.g. "GET", "DELETE")
      */
     public CompletableFuture<AuthDecision> authorize(String token, String resource, String action) {
         return CompletableFuture.supplyAsync(() -> {
+            MeterRegistry reg = this.meterRegistry;
+            Timer.Sample sample = reg != null ? CoreSDKMetrics.startSample(reg) : null;
             try {
                 String controlPlaneUrl = config.getControlPlaneUrl();
 
@@ -77,18 +73,14 @@ public class CoreSDK {
                     return new AuthDecision(true, failOpenClaims, "no-control-plane");
                 }
 
-                // Strip trailing slash for safe concatenation
-                String base = controlPlaneUrl.endsWith("/")
-                    ? controlPlaneUrl.substring(0, controlPlaneUrl.length() - 1)
-                    : controlPlaneUrl;
+                String base = stripTrailingSlash(controlPlaneUrl);
 
-                String body = String.format(
-                    "{\"token\":\"%s\",\"resource\":\"%s\",\"action\":\"%s\",\"tenant_id\":\"%s\"}",
-                    escapeJson(token),
-                    escapeJson(resource),
-                    escapeJson(action),
-                    escapeJson(config.getTenantId())
-                );
+                String body = MAPPER.writeValueAsString(Map.of(
+                    "token", token != null ? token : "",
+                    "resource", resource != null ? resource : "",
+                    "action", action != null ? action : "",
+                    "tenant_id", config.getTenantId() != null ? config.getTenantId() : ""
+                ));
 
                 HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(base + "/api/v1/auth/validate"))
@@ -107,22 +99,33 @@ public class CoreSDK {
                         response.statusCode()));
                 }
 
-                String responseBody = response.body();
-                boolean allowed = responseBody.contains("\"allowed\":true");
-                String subject  = extractJsonString(responseBody, "sub");
-                String tenantId = extractJsonString(responseBody, "tenant_id");
+                JsonNode json = MAPPER.readTree(response.body());
+                boolean allowed = json.path("allowed").asBoolean(false);
+                String subject = json.path("sub").asText("");
+                String tenantId = json.path("tenant_id").asText("");
 
                 Claims claims = new Claims(
-                    subject.isEmpty()   ? "unknown"             : subject,
-                    tenantId.isEmpty()  ? config.getTenantId()  : tenantId,
+                    subject.isEmpty()  ? "unknown"            : subject,
+                    tenantId.isEmpty() ? config.getTenantId() : tenantId,
                     List.of(),
                     System.currentTimeMillis() / 1000 + 3600
                 );
+                if (sample != null) CoreSDKMetrics.recordAuthorize(reg, sample, allowed ? "allow" : "deny");
                 return new AuthDecision(allowed, claims, null);
 
             } catch (CoreSDKException e) {
+                if (sample != null) {
+                    String errType = e.getMessage() != null && e.getMessage().contains("timeout") ? "timeout" : "network";
+                    CoreSDKMetrics.incrementAuthorizeError(reg, errType);
+                    CoreSDKMetrics.recordAuthorize(reg, sample, "deny");
+                }
                 throw e;
             } catch (Exception e) {
+                if (sample != null) {
+                    String errType = e instanceof HttpTimeoutException ? "timeout" : "network";
+                    CoreSDKMetrics.incrementAuthorizeError(reg, errType);
+                    CoreSDKMetrics.recordAuthorize(reg, sample, "fail_open");
+                }
                 if ("closed".equals(config.getFailMode())) {
                     throw new CoreSDKException(
                         new ProblemDetail(
@@ -138,28 +141,77 @@ public class CoreSDK {
         });
     }
 
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
+    /**
+     * Evaluate a named policy rule via the control plane.
+     *
+     * @param rule  fully-qualified OPA rule path, e.g. {@code "data.authz.allow"}
+     * @param input arbitrary JSON object sent as policy input
+     */
+    public CompletableFuture<PolicyResult> evaluatePolicy(String rule, Map<String, Object> input) {
+        return CompletableFuture.supplyAsync(() -> {
+            MeterRegistry reg = this.meterRegistry;
+            Timer.Sample sample = reg != null ? CoreSDKMetrics.startSample(reg) : null;
+            try {
+                String controlPlaneUrl = config.getControlPlaneUrl();
+                if (controlPlaneUrl == null || controlPlaneUrl.isBlank()) {
+                    if ("closed".equals(config.getFailMode())) {
+                        throw new CoreSDKException(new ProblemDetail(
+                            "https://coresdk.io/errors/configuration",
+                            "No Control Plane Configured", 503));
+                    }
+                    if (sample != null) CoreSDKMetrics.recordPolicy(reg, sample, rule, "fail_open");
+                    return new PolicyResult(true, "no-control-plane");
+                }
+                String base = stripTrailingSlash(controlPlaneUrl);
 
-    /** Minimal JSON string escaping — no external dependency required. */
-    private static String escapeJson(String value) {
-        if (value == null) return "";
-        return value.replace("\\", "\\\\")
-                    .replace("\"", "\\\"")
-                    .replace("\n", "\\n")
-                    .replace("\r", "\\r")
-                    .replace("\t", "\\t");
-    }
+                String body = MAPPER.writeValueAsString(Map.of(
+                    "rule", rule != null ? rule : "",
+                    "tenant_id", config.getTenantId() != null ? config.getTenantId() : "",
+                    "input", input != null ? input : Map.of()
+                ));
 
-    private static String extractJsonString(String json, String key) {
-        String search = "\"" + key + "\":\"";
-        int start = json.indexOf(search);
-        if (start < 0) return "";
-        start += search.length();
-        int end = json.indexOf("\"", start);
-        return end < 0 ? "" : json.substring(start, end);
+                HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(base + "/api/v1/policy/evaluate"))
+                    .timeout(Duration.ofSeconds(5))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+
+                HttpResponse<String> response =
+                    HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() >= 400) {
+                    throw new CoreSDKException(new ProblemDetail(
+                        "https://coresdk.io/errors/policy-error",
+                        "Policy Evaluation Error", response.statusCode()));
+                }
+                JsonNode json = MAPPER.readTree(response.body());
+                boolean allowed = json.path("allowed").asBoolean(false);
+                if (sample != null) CoreSDKMetrics.recordPolicy(reg, sample, rule, allowed ? "allow" : "deny");
+                return new PolicyResult(allowed, null);
+            } catch (CoreSDKException e) {
+                if (sample != null) {
+                    CoreSDKMetrics.incrementPolicyError(reg);
+                    CoreSDKMetrics.recordPolicy(reg, sample, rule, "deny");
+                }
+                throw e;
+            } catch (Exception e) {
+                if (sample != null) {
+                    CoreSDKMetrics.incrementPolicyError(reg);
+                    CoreSDKMetrics.recordPolicy(reg, sample, rule, "fail_open");
+                }
+                if ("closed".equals(config.getFailMode())) {
+                    throw new CoreSDKException(new ProblemDetail(
+                        "https://coresdk.io/errors/internal", "Internal Error", 500), e);
+                }
+                log.warn("[coresdk] evaluatePolicy fail-open: {}", e.getMessage());
+                return new PolicyResult(true, "fail-open");
+            }
+        });
     }
 
     public CoreSDKConfig getConfig() { return config; }
+
+    private static String stripTrailingSlash(String url) {
+        return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+    }
 }
