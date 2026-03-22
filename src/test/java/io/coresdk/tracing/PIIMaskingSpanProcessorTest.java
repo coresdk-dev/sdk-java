@@ -33,47 +33,47 @@ class PIIMaskingSpanProcessorTest {
     @Test
     void redactsSSN() {
         ReadWriteSpan span = mockSpanWithAttribute("user.info", "SSN is 123-45-6789 please");
-        processor.onEnd(span);
+        processor.onStart(null, span);
         verifyAttributeSet(span, "user.info", "[REDACTED] please");
     }
 
     @Test
     void redactsEmail() {
         ReadWriteSpan span = mockSpanWithAttribute("message", "Contact alice@example.com for help");
-        processor.onEnd(span);
+        processor.onStart(null, span);
         verifyAttributeSet(span, "message", "Contact [REDACTED] for help");
     }
 
     @Test
     void redactsSensitiveKeyName() {
         ReadWriteSpan span = mockSpanWithAttribute("password", "s3cr3tP@ss!");
-        processor.onEnd(span);
+        processor.onStart(null, span);
         verifyAttributeSet(span, "password", "[REDACTED]");
     }
 
     @Test
     void redactsApiKey() {
         ReadWriteSpan span = mockSpanWithAttribute("api_key", "sk-prod-abc123");
-        processor.onEnd(span);
+        processor.onStart(null, span);
         verifyAttributeSet(span, "api_key", "[REDACTED]");
     }
 
     @Test
     void doesNotModifyCleanAttribute() {
         ReadWriteSpan span = mockSpanWithAttribute("http.method", "GET");
-        processor.onEnd(span);
+        processor.onStart(null, span);
         // setAttribute should NOT be called for clean values
         verify(span, never()).setAttribute(any(AttributeKey.class), any());
     }
 
     @Test
     void isEndRequiredReturnsTrue() {
-        assertTrue(processor.isEndRequired());
+        assertFalse(processor.isEndRequired());
     }
 
     @Test
     void isStartRequiredReturnsFalse() {
-        assertFalse(processor.isStartRequired());
+        assertTrue(processor.isStartRequired());
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

@@ -60,5 +60,10 @@ public class MockCoreSDK extends CoreSDK {
         return CompletableFuture.completedFuture(null);
     }
 
+    @Override
+    public CompletableFuture<Boolean> isRevoked(String token) {
+        return CompletableFuture.completedFuture(false);
+    }
+
     public List<String> getAuthorizeCalls() { return List.copyOf(authorizeCalls); }
 }

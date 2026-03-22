@@ -5,6 +5,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "coresdk")
 public class CoreSDKConfig {
     private String endpoint = "localhost:50051";
+    private String sidecarAddr = "localhost:50051";
     private String tenantId = "";
     private String failMode = "open";
     private String controlPlaneUrl = "";
@@ -16,7 +17,10 @@ public class CoreSDKConfig {
         // CORESDK_ENDPOINT is accepted as a deprecated alias for backwards compatibility.
         String ep = System.getenv("CORESDK_SIDECAR_ADDR");
         if (ep == null) ep = System.getenv("CORESDK_ENDPOINT");
-        if (ep != null) cfg.setEndpoint(ep);
+        if (ep != null) {
+            cfg.setSidecarAddr(ep);
+            cfg.setEndpoint(ep);
+        }
         String tenant = System.getenv("CORESDK_TENANT_ID");
         if (tenant != null) cfg.setTenantId(tenant);
         String failMode = System.getenv("CORESDK_FAIL_MODE");
@@ -34,6 +38,10 @@ public class CoreSDKConfig {
 
     public String getEndpoint() { return endpoint; }
     public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
+
+    /** gRPC address of the sidecar (canonical field, preferred over {@code endpoint}). */
+    public String getSidecarAddr() { return sidecarAddr; }
+    public void setSidecarAddr(String sidecarAddr) { this.sidecarAddr = sidecarAddr; }
 
     public String getTenantId() { return tenantId; }
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }

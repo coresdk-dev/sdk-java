@@ -624,6 +624,48 @@ public class CoreSDK {
         });
     }
 
+    // ---- Token Revocation (isRevoked) ----
+
+    public CompletableFuture<Boolean> isRevoked(String token) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                AuthServiceGrpc.BlockingStub stub = getGrpcStub();
+                String tenantId = config.getTenantId() != null ? config.getTenantId() : "";
+
+                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                writeString(buf, 1, token);
+                writeString(buf, 2, tenantId);
+
+                byte[] responseBytes = stub.isRevoked(buf.toByteArray());
+                // Protobuf: field 1=revoked(varint bool)
+                boolean revoked = false;
+                int pos = 0;
+                while (pos < responseBytes.length) {
+                    long[] tagResult = readVarint(responseBytes, pos);
+                    pos = (int) tagResult[1];
+                    int fieldNum = (int) (tagResult[0] >>> 3);
+                    int wireType = (int) (tagResult[0] & 0x7);
+                    if (wireType == 0) {
+                        long[] valResult = readVarint(responseBytes, pos);
+                        pos = (int) valResult[1];
+                        if (fieldNum == 1) revoked = valResult[0] != 0;
+                    } else if (wireType == 2) {
+                        long[] lenResult = readVarint(responseBytes, pos);
+                        pos = (int) lenResult[1] + (int) lenResult[0];
+                    }
+                }
+                return revoked;
+            } catch (Exception e) {
+                if ("closed".equals(config.getFailMode())) {
+                    throw new CoreSDKException(new ProblemDetail(
+                        "https://coresdk.io/errors/internal", "Internal Error", 500), e);
+                }
+                log.warn("[coresdk] isRevoked fail-open: {}", e.getMessage());
+                return false;
+            }
+        });
+    }
+
     // ---- Protobuf wire-format helpers ----
 
     private static void writeVarint(java.io.ByteArrayOutputStream out, long value) throws java.io.IOException {

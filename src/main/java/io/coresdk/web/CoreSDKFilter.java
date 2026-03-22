@@ -44,8 +44,8 @@ public class CoreSDKFilter implements Filter {
 
             // Inject tenant/user headers for downstream services
             var claims = decision.getClaims();
-            if (claims.getSubject() != null && !claims.getSubject().isEmpty()) {
-                res.setHeader("X-User-UUID", claims.getSubject());
+            if (claims.getSub() != null && !claims.getSub().isEmpty()) {
+                res.setHeader("X-User-UUID", claims.getSub());
             }
             if (claims.getTenantId() != null && !claims.getTenantId().isEmpty()) {
                 res.setHeader("X-Tenant-ID", claims.getTenantId());
