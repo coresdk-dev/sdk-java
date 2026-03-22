@@ -55,16 +55,9 @@ public final class PIIMaskingSpanProcessor implements SpanProcessor {
 
     @Override
     public void onStart(Context parentContext, ReadWriteSpan span) {
-        // no-op: attributes may not be fully populated at start
-    }
-
-    @Override
-    public boolean isStartRequired() {
-        return false;
-    }
-
-    @Override
-    public void onEnd(ReadWriteSpan span) {
+        // Mask attributes on start when the span is still mutable (ReadWriteSpan).
+        // onEnd() receives a ReadableSpan which is immutable — setAttribute() is
+        // not available there, so all redaction must happen here.
         span.toSpanData().getAttributes().forEach((key, value) -> {
             if (key.getType() == io.opentelemetry.api.common.AttributeType.STRING) {
                 @SuppressWarnings("unchecked")
@@ -79,8 +72,18 @@ public final class PIIMaskingSpanProcessor implements SpanProcessor {
     }
 
     @Override
-    public boolean isEndRequired() {
+    public boolean isStartRequired() {
         return true;
+    }
+
+    @Override
+    public void onEnd(ReadableSpan span) {
+        // ReadableSpan is immutable — no masking here. All redaction is in onStart.
+    }
+
+    @Override
+    public boolean isEndRequired() {
+        return false;
     }
 
     @Override
