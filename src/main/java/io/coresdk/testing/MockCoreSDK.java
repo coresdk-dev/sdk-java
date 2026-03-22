@@ -35,5 +35,30 @@ public class MockCoreSDK extends CoreSDK {
         return CompletableFuture.completedFuture(new PolicyResult(defaultAllow, null));
     }
 
+    @Override
+    public CompletableFuture<RateLimitDecision> checkRateLimit(String key) {
+        return CompletableFuture.completedFuture(new RateLimitDecision(true, 999, 0));
+    }
+
+    @Override
+    public CompletableFuture<AuditRecord> emitAuditEvent(String action, String userId, String outcome, Map<String, String> metadata) {
+        return CompletableFuture.completedFuture(new AuditRecord("mock-id", 0, "mock"));
+    }
+
+    @Override
+    public CompletableFuture<FlagDecision> evaluateFlag(String flagKey, String userId) {
+        return CompletableFuture.completedFuture(new FlagDecision(true, "", "mock"));
+    }
+
+    @Override
+    public CompletableFuture<LicenseInfo> checkEntitlement(String key) {
+        return CompletableFuture.completedFuture(new LicenseInfo(true, 0, 0, "enterprise"));
+    }
+
+    @Override
+    public CompletableFuture<Void> revokeToken(String token) {
+        return CompletableFuture.completedFuture(null);
+    }
+
     public List<String> getAuthorizeCalls() { return List.copyOf(authorizeCalls); }
 }

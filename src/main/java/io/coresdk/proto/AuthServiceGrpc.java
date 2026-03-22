@@ -48,6 +48,54 @@ public final class AuthServiceGrpc {
             .setResponseMarshaller(bytesMarshaller())
             .build();
 
+    public static final String RATELIMIT_SERVICE_NAME = "coresdk.v1.RateLimitService";
+
+    private static final MethodDescriptor<byte[], byte[]> METHOD_CHECK_RATE_LIMIT =
+        MethodDescriptor.<byte[], byte[]>newBuilder()
+            .setType(MethodDescriptor.MethodType.UNARY)
+            .setFullMethodName(RATELIMIT_SERVICE_NAME + "/Check")
+            .setRequestMarshaller(bytesMarshaller())
+            .setResponseMarshaller(bytesMarshaller())
+            .build();
+
+    public static final String AUDIT_SERVICE_NAME = "coresdk.v1.AuditService";
+
+    private static final MethodDescriptor<byte[], byte[]> METHOD_EMIT_AUDIT =
+        MethodDescriptor.<byte[], byte[]>newBuilder()
+            .setType(MethodDescriptor.MethodType.UNARY)
+            .setFullMethodName(AUDIT_SERVICE_NAME + "/Emit")
+            .setRequestMarshaller(bytesMarshaller())
+            .setResponseMarshaller(bytesMarshaller())
+            .build();
+
+    public static final String FLAG_SERVICE_NAME = "coresdk.v1.FlagService";
+
+    private static final MethodDescriptor<byte[], byte[]> METHOD_EVALUATE_FLAG =
+        MethodDescriptor.<byte[], byte[]>newBuilder()
+            .setType(MethodDescriptor.MethodType.UNARY)
+            .setFullMethodName(FLAG_SERVICE_NAME + "/Evaluate")
+            .setRequestMarshaller(bytesMarshaller())
+            .setResponseMarshaller(bytesMarshaller())
+            .build();
+
+    public static final String LICENSE_SERVICE_NAME = "coresdk.v1.LicenseService";
+
+    private static final MethodDescriptor<byte[], byte[]> METHOD_CHECK_ENTITLEMENT =
+        MethodDescriptor.<byte[], byte[]>newBuilder()
+            .setType(MethodDescriptor.MethodType.UNARY)
+            .setFullMethodName(LICENSE_SERVICE_NAME + "/CheckEntitlement")
+            .setRequestMarshaller(bytesMarshaller())
+            .setResponseMarshaller(bytesMarshaller())
+            .build();
+
+    private static final MethodDescriptor<byte[], byte[]> METHOD_REVOKE_TOKEN =
+        MethodDescriptor.<byte[], byte[]>newBuilder()
+            .setType(MethodDescriptor.MethodType.UNARY)
+            .setFullMethodName(SERVICE_NAME + "/RevokeToken")
+            .setRequestMarshaller(bytesMarshaller())
+            .setResponseMarshaller(bytesMarshaller())
+            .build();
+
     private static MethodDescriptor.Marshaller<byte[]> bytesMarshaller() {
         return new MethodDescriptor.Marshaller<byte[]>() {
             @Override
@@ -112,6 +160,31 @@ public final class AuthServiceGrpc {
         public byte[] evaluatePolicy(byte[] request) {
             return ClientCalls.blockingUnaryCall(
                 getChannel(), METHOD_EVALUATE_POLICY, getCallOptions(), request);
+        }
+
+        public byte[] checkRateLimit(byte[] request) {
+            return ClientCalls.blockingUnaryCall(
+                getChannel(), METHOD_CHECK_RATE_LIMIT, getCallOptions(), request);
+        }
+
+        public byte[] emitAudit(byte[] request) {
+            return ClientCalls.blockingUnaryCall(
+                getChannel(), METHOD_EMIT_AUDIT, getCallOptions(), request);
+        }
+
+        public byte[] evaluateFlag(byte[] request) {
+            return ClientCalls.blockingUnaryCall(
+                getChannel(), METHOD_EVALUATE_FLAG, getCallOptions(), request);
+        }
+
+        public byte[] checkEntitlement(byte[] request) {
+            return ClientCalls.blockingUnaryCall(
+                getChannel(), METHOD_CHECK_ENTITLEMENT, getCallOptions(), request);
+        }
+
+        public byte[] revokeToken(byte[] request) {
+            return ClientCalls.blockingUnaryCall(
+                getChannel(), METHOD_REVOKE_TOKEN, getCallOptions(), request);
         }
     }
 }

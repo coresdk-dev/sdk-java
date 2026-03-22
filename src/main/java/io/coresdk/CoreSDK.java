@@ -64,7 +64,7 @@ public class CoreSDK {
         if (grpcStub == null) {
             synchronized (this) {
                 if (grpcStub == null) {
-                    String target = config.getEndpoint();
+                    String target = config.getSidecarAddr();
                     String certPath = config.getTls() != null ? config.getTls().getCertPath() : null;
                     if (certPath != null && !certPath.isEmpty()) {
                         try {
@@ -393,6 +393,235 @@ public class CoreSDK {
         }
         log.warn("[coresdk] evaluatePolicy fail-open: {}", e.getMessage());
         return new PolicyResult(true, "fail-open");
+    }
+
+    // ---- Rate Limit ----
+
+    public CompletableFuture<RateLimitDecision> checkRateLimit(String key) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                AuthServiceGrpc.BlockingStub stub = getGrpcStub();
+                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                writeString(buf, 1, key);
+                String tenantId = config.getTenantId() != null ? config.getTenantId() : "";
+                writeString(buf, 2, tenantId);
+
+                byte[] responseBytes = stub.checkRateLimit(buf.toByteArray());
+                // Protobuf: field 1=allowed(varint), field 2=remaining(varint), field 3=retry_after_ms(varint)
+                boolean allowed = false;
+                int remaining = 0;
+                int retryAfterMs = 0;
+                int pos = 0;
+                while (pos < responseBytes.length) {
+                    long[] tagResult = readVarint(responseBytes, pos);
+                    pos = (int) tagResult[1];
+                    int fieldNum = (int) (tagResult[0] >>> 3);
+                    int wireType = (int) (tagResult[0] & 0x7);
+                    if (wireType == 0) {
+                        long[] valResult = readVarint(responseBytes, pos);
+                        pos = (int) valResult[1];
+                        if (fieldNum == 1) allowed = valResult[0] != 0;
+                        else if (fieldNum == 2) remaining = (int) valResult[0];
+                        else if (fieldNum == 3) retryAfterMs = (int) valResult[0];
+                    } else if (wireType == 2) {
+                        long[] lenResult = readVarint(responseBytes, pos);
+                        pos = (int) lenResult[1] + (int) lenResult[0];
+                    }
+                }
+                return new RateLimitDecision(allowed, remaining, retryAfterMs);
+            } catch (Exception e) {
+                if ("closed".equals(config.getFailMode())) {
+                    throw new CoreSDKException(new ProblemDetail(
+                        "https://coresdk.io/errors/internal", "Internal Error", 500), e);
+                }
+                log.warn("[coresdk] checkRateLimit fail-open: {}", e.getMessage());
+                return new RateLimitDecision(true, 999, 0);
+            }
+        });
+    }
+
+    // ---- Audit ----
+
+    public CompletableFuture<AuditRecord> emitAuditEvent(String action, String userId, String outcome, Map<String, String> metadata) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                AuthServiceGrpc.BlockingStub stub = getGrpcStub();
+                String tenantId = config.getTenantId() != null ? config.getTenantId() : "";
+                String metaJson = "";
+                try {
+                    metaJson = metadata != null ? MAPPER.writeValueAsString(metadata) : "{}";
+                } catch (Exception ignored) {
+                    metaJson = "{}";
+                }
+
+                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                writeString(buf, 1, action);
+                writeString(buf, 2, userId);
+                writeString(buf, 3, outcome);
+                writeString(buf, 4, tenantId);
+                writeString(buf, 5, metaJson);
+
+                byte[] responseBytes = stub.emitAudit(buf.toByteArray());
+                // Protobuf: field 1=event_id(string), field 2=sequence_id(varint), field 3=record_hash(string)
+                String eventId = "";
+                int sequenceId = 0;
+                String recordHash = "";
+                int pos = 0;
+                while (pos < responseBytes.length) {
+                    long[] tagResult = readVarint(responseBytes, pos);
+                    pos = (int) tagResult[1];
+                    int fieldNum = (int) (tagResult[0] >>> 3);
+                    int wireType = (int) (tagResult[0] & 0x7);
+                    if (wireType == 0) {
+                        long[] valResult = readVarint(responseBytes, pos);
+                        pos = (int) valResult[1];
+                        if (fieldNum == 2) sequenceId = (int) valResult[0];
+                    } else if (wireType == 2) {
+                        long[] lenResult = readVarint(responseBytes, pos);
+                        int len = (int) lenResult[0];
+                        pos = (int) lenResult[1];
+                        String s = new String(responseBytes, pos, len, StandardCharsets.UTF_8);
+                        pos += len;
+                        if (fieldNum == 1) eventId = s;
+                        else if (fieldNum == 3) recordHash = s;
+                    }
+                }
+                return new AuditRecord(eventId, sequenceId, recordHash);
+            } catch (Exception e) {
+                if ("closed".equals(config.getFailMode())) {
+                    throw new CoreSDKException(new ProblemDetail(
+                        "https://coresdk.io/errors/internal", "Internal Error", 500), e);
+                }
+                log.warn("[coresdk] emitAuditEvent fail-open: {}", e.getMessage());
+                return new AuditRecord("", 0, "");
+            }
+        });
+    }
+
+    // ---- Feature Flags ----
+
+    public CompletableFuture<FlagDecision> evaluateFlag(String flagKey, String userId) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                AuthServiceGrpc.BlockingStub stub = getGrpcStub();
+                String tenantId = config.getTenantId() != null ? config.getTenantId() : "";
+
+                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                writeString(buf, 1, flagKey);
+                writeString(buf, 2, userId);
+                writeString(buf, 3, tenantId);
+
+                byte[] responseBytes = stub.evaluateFlag(buf.toByteArray());
+                // Protobuf: field 1=enabled(varint), field 2=variant(string), field 3=reason(string)
+                boolean enabled = false;
+                String variant = "";
+                String reason = "";
+                int pos = 0;
+                while (pos < responseBytes.length) {
+                    long[] tagResult = readVarint(responseBytes, pos);
+                    pos = (int) tagResult[1];
+                    int fieldNum = (int) (tagResult[0] >>> 3);
+                    int wireType = (int) (tagResult[0] & 0x7);
+                    if (wireType == 0) {
+                        long[] valResult = readVarint(responseBytes, pos);
+                        pos = (int) valResult[1];
+                        if (fieldNum == 1) enabled = valResult[0] != 0;
+                    } else if (wireType == 2) {
+                        long[] lenResult = readVarint(responseBytes, pos);
+                        int len = (int) lenResult[0];
+                        pos = (int) lenResult[1];
+                        String s = new String(responseBytes, pos, len, StandardCharsets.UTF_8);
+                        pos += len;
+                        if (fieldNum == 2) variant = s;
+                        else if (fieldNum == 3) reason = s;
+                    }
+                }
+                return new FlagDecision(enabled, variant, reason);
+            } catch (Exception e) {
+                if ("closed".equals(config.getFailMode())) {
+                    throw new CoreSDKException(new ProblemDetail(
+                        "https://coresdk.io/errors/internal", "Internal Error", 500), e);
+                }
+                log.warn("[coresdk] evaluateFlag fail-open: {}", e.getMessage());
+                return new FlagDecision(false, "", "fail-open");
+            }
+        });
+    }
+
+    // ---- License / Entitlements ----
+
+    public CompletableFuture<LicenseInfo> checkEntitlement(String key) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                AuthServiceGrpc.BlockingStub stub = getGrpcStub();
+                String tenantId = config.getTenantId() != null ? config.getTenantId() : "";
+
+                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                writeString(buf, 1, key);
+                writeString(buf, 2, tenantId);
+
+                byte[] responseBytes = stub.checkEntitlement(buf.toByteArray());
+                // Protobuf: field 1=entitled(varint), field 2=numeric_value(varint), field 3=expires_at(varint), field 4=plan(string)
+                boolean entitled = false;
+                int numericValue = 0;
+                long expiresAt = 0;
+                String plan = "";
+                int pos = 0;
+                while (pos < responseBytes.length) {
+                    long[] tagResult = readVarint(responseBytes, pos);
+                    pos = (int) tagResult[1];
+                    int fieldNum = (int) (tagResult[0] >>> 3);
+                    int wireType = (int) (tagResult[0] & 0x7);
+                    if (wireType == 0) {
+                        long[] valResult = readVarint(responseBytes, pos);
+                        pos = (int) valResult[1];
+                        if (fieldNum == 1) entitled = valResult[0] != 0;
+                        else if (fieldNum == 2) numericValue = (int) valResult[0];
+                        else if (fieldNum == 3) expiresAt = valResult[0];
+                    } else if (wireType == 2) {
+                        long[] lenResult = readVarint(responseBytes, pos);
+                        int len = (int) lenResult[0];
+                        pos = (int) lenResult[1];
+                        String s = new String(responseBytes, pos, len, StandardCharsets.UTF_8);
+                        pos += len;
+                        if (fieldNum == 4) plan = s;
+                    }
+                }
+                return new LicenseInfo(entitled, numericValue, expiresAt, plan);
+            } catch (Exception e) {
+                if ("closed".equals(config.getFailMode())) {
+                    throw new CoreSDKException(new ProblemDetail(
+                        "https://coresdk.io/errors/internal", "Internal Error", 500), e);
+                }
+                log.warn("[coresdk] checkEntitlement fail-open: {}", e.getMessage());
+                return new LicenseInfo(false, 0, 0, "");
+            }
+        });
+    }
+
+    // ---- Token Revocation ----
+
+    public CompletableFuture<Void> revokeToken(String token) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                AuthServiceGrpc.BlockingStub stub = getGrpcStub();
+                String tenantId = config.getTenantId() != null ? config.getTenantId() : "";
+
+                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                writeString(buf, 1, token);
+                writeString(buf, 2, tenantId);
+
+                stub.revokeToken(buf.toByteArray());
+                return null;
+            } catch (Exception e) {
+                if ("closed".equals(config.getFailMode())) {
+                    throw new CoreSDKException(new ProblemDetail(
+                        "https://coresdk.io/errors/internal", "Internal Error", 500), e);
+                }
+                log.warn("[coresdk] revokeToken fail-open: {}", e.getMessage());
+                return null;
+            }
+        });
     }
 
     // ---- Protobuf wire-format helpers ----
