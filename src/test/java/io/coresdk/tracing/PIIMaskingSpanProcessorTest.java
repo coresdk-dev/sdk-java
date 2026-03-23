@@ -34,7 +34,7 @@ class PIIMaskingSpanProcessorTest {
     void redactsSSN() {
         ReadWriteSpan span = mockSpanWithAttribute("user.info", "SSN is 123-45-6789 please");
         processor.onStart(null, span);
-        verifyAttributeSet(span, "user.info", "[REDACTED] please");
+        verifyAttributeSet(span, "user.info", "SSN is [REDACTED] please");
     }
 
     @Test
