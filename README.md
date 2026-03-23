@@ -90,6 +90,20 @@ export CORESDK_TLS_CA=/path/to/ca.crt
 
 > **Note:** The Java SDK currently uses HTTP REST transport. mTLS support via gRPC (`AuthServiceGrpc.java`) is present but not yet wired. See the [core-sdk README](https://github.com/coresdk-dev/core-sdk#mtls-configuration) for certificate generation instructions.
 
+## Sidecar
+
+```bash
+docker run --rm \
+  -e CORESDK_ENV=development \
+  -e CORESDK_SIDECAR_ADDR=[::]:50051 \
+  -p 50051:50051 \
+  -p 9091:9091 \
+  ghcr.io/coresdk-dev/sidecar:latest
+# Verify: curl http://localhost:9091/healthz  →  {"status":"ok"}
+```
+
+See the [Getting Started guide](GETTING-STARTED.md) for the full setup walkthrough.
+
 ## Auto-wired beans
 
 | Bean | Type | Description |
