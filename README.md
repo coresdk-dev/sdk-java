@@ -2,6 +2,8 @@
 
 Auto-configures CoreSDK for Spring Boot 3.x applications.
 
+**New here?** The [Getting Started guide](GETTING-STARTED.md) takes you from zero to a working sidecar + SDK call in 15 minutes, with a **why** explanation at every step.
+
 ## Maven
 
 ```xml
