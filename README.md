@@ -29,6 +29,21 @@ coresdk:
   fail-mode: open
 ```
 
+## Transport Note — Important
+
+> **The Java SDK currently uses HTTP REST transport (calls `:8080` control plane), not the gRPC sidecar.**
+>
+> This means the following sidecar features are **not active** for Java services:
+> - JWT signature verification via JWK cache
+> - Token revocation list (`.is_revoked()` not available)
+> - Sidecar-side rate limiting
+> - Hash-chained audit pipeline
+> - Fail-mode semantics of the sidecar
+>
+> `AuthServiceGrpc.java` exists in the codebase and the gRPC path is planned. Track progress at [core-sdk#grpc-java](https://github.com/coresdk-dev/core-sdk/issues).
+>
+> For production Java services requiring sidecar guarantees, proxy auth calls through a Python or Go sidecar service until the gRPC path is wired.
+
 ## Authorize requests
 
 ```java

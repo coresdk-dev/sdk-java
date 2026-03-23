@@ -227,6 +227,8 @@ AuthDecision decision = sdk.authorize("Bearer test-token", "/api/orders", "GET")
 System.out.println("allowed: " + decision.isAllowed());
 ```
 
+> **Java transport note:** The Java SDK currently calls the control plane REST API (`:8080`), not the gRPC sidecar. The `authorize()` call above works, but JWT revocation, sidecar fail-mode, and rate limiting do not apply. See [Transport Note](README.md#transport-note--important) for details.
+
 If you see `allowed: true` (or `allowed: True`) — the gRPC connection is working. Move to Step 3.
 
 If you see a connection error — check that the sidecar is running (`curl http://localhost:9091/healthz`) and that `CORESDK_SIDECAR_ADDR` matches the address the sidecar is listening on.

@@ -92,12 +92,18 @@ public class CoreSDK {
     }
 
     /**
-     * Authorize a request via the sidecar gRPC service.
-     * Falls back to control plane HTTP REST if controlPlaneUrl is set and gRPC fails.
+     * Authorizes a request by validating the bearer token.
      *
-     * @param token    raw Bearer token (without the "Bearer " prefix)
-     * @param resource resource path or name being accessed
-     * @param action   action being attempted (e.g. "GET", "DELETE")
+     * <p><strong>Transport note:</strong> This method currently calls the control plane
+     * HTTP REST API ({@code :8080}), not the gRPC sidecar ({@code :50051}). Token
+     * revocation, sidecar-side rate limiting, and the hash-chained audit pipeline are
+     * not active for calls made through this method. See {@code AuthServiceGrpc.java}
+     * for the planned gRPC path.
+     *
+     * @param token  the Bearer token to validate
+     * @param resource  the resource being accessed (e.g. "/api/orders")
+     * @param action    the action being performed (e.g. "GET")
+     * @return a CompletableFuture containing the authorization decision
      */
     public CompletableFuture<AuthDecision> authorize(String token, String resource, String action) {
         return CompletableFuture.supplyAsync(() -> {
