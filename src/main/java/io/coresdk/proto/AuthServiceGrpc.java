@@ -96,6 +96,14 @@ public final class AuthServiceGrpc {
             .setResponseMarshaller(bytesMarshaller())
             .build();
 
+    private static final MethodDescriptor<byte[], byte[]> METHOD_IS_REVOKED =
+        MethodDescriptor.<byte[], byte[]>newBuilder()
+            .setType(MethodDescriptor.MethodType.UNARY)
+            .setFullMethodName(SERVICE_NAME + "/IsRevoked")
+            .setRequestMarshaller(bytesMarshaller())
+            .setResponseMarshaller(bytesMarshaller())
+            .build();
+
     private static MethodDescriptor.Marshaller<byte[]> bytesMarshaller() {
         return new MethodDescriptor.Marshaller<byte[]>() {
             @Override
@@ -185,6 +193,11 @@ public final class AuthServiceGrpc {
         public byte[] revokeToken(byte[] request) {
             return ClientCalls.blockingUnaryCall(
                 getChannel(), METHOD_REVOKE_TOKEN, getCallOptions(), request);
+        }
+
+        public byte[] isRevoked(byte[] request) {
+            return ClientCalls.blockingUnaryCall(
+                getChannel(), METHOD_IS_REVOKED, getCallOptions(), request);
         }
     }
 }
