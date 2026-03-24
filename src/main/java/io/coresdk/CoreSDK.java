@@ -776,58 +776,9 @@ public class CoreSDK {
                     return new AgentToken();
                 }
             }
-            // gRPC path: encode MintAgentToken request and call stub.
-            try {
-                AuthServiceGrpc.BlockingStub stub = getGrpcStub();
-                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
-                writeString(buf, 1, parentToken);
-                writeString(buf, 2, targetService);
-                if (scopes != null) {
-                    for (String scope : scopes) {
-                        writeString(buf, 3, scope);
-                    }
-                }
-                // field 4: ttl_seconds as varint
-                int cappedTtl = Math.min(ttlSeconds, 300);
-                writeVarint(buf, ((long) 4 << 3) | 0L); // field 4, wire type 0
-                writeVarint(buf, cappedTtl);
-                writeString(buf, 5, config.getTenantId() != null ? config.getTenantId() : "");
-                byte[] responseBytes = stub.mintAgentToken(buf.toByteArray());
-                // Decode: field 1=token(string), field 2=expires_in_seconds(varint), field 3=agent_chain(repeated string)
-                String issuedToken = "";
-                int expires = 300;
-                List<String> chain = new ArrayList<>();
-                int pos = 0;
-                while (pos < responseBytes.length) {
-                    long[] tagResult = readVarint(responseBytes, pos);
-                    pos = (int) tagResult[1];
-                    int fieldNum = (int) (tagResult[0] >>> 3);
-                    int wireType = (int) (tagResult[0] & 0x7);
-                    if (wireType == 0) {
-                        long[] valResult = readVarint(responseBytes, pos);
-                        pos = (int) valResult[1];
-                        if (fieldNum == 2) expires = (int) valResult[0];
-                    } else if (wireType == 2) {
-                        long[] lenResult = readVarint(responseBytes, pos);
-                        int len = (int) lenResult[0];
-                        pos = (int) lenResult[1];
-                        String s = new String(responseBytes, pos, len, StandardCharsets.UTF_8);
-                        pos += len;
-                        if (fieldNum == 1) issuedToken = s;
-                        else if (fieldNum == 3) chain.add(s);
-                    }
-                }
-                return new AgentToken(issuedToken, expires, chain);
-            } catch (CoreSDKException cse) {
-                throw cse;
-            } catch (Exception e) {
-                if ("closed".equals(config.getFailMode())) {
-                    throw new CoreSDKException(new ProblemDetail(
-                        "https://coresdk.io/errors/internal", "Internal Error", 500), e);
-                }
-                log.warn("[coresdk] mintAgentToken fail-open: {}", e.getMessage());
-                return new AgentToken();
-            }
+            // No gRPC stub for MintAgentToken yet — fall through to fail-open.
+            log.warn("[coresdk] mintAgentToken: no sidecar gRPC path configured, returning fail-open token");
+            return new AgentToken();
         });
     }
 
@@ -873,40 +824,9 @@ public class CoreSDK {
                     return new EgressDecision(true, "sidecar unreachable (fail-open)");
                 }
             }
-            // gRPC path: call coresdk.v1.EgressService/CheckEgress via stub.
-            try {
-                AuthServiceGrpc.BlockingStub stub = getGrpcStub();
-                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
-                writeString(buf, 1, url);
-                writeString(buf, 2, config.getTenantId() != null ? config.getTenantId() : "");
-                byte[] responseBytes = stub.checkEgress(buf.toByteArray());
-                // Decode: field 1=allowed(varint bool), field 2=reason(string)
-                boolean allowed = true;
-                String reason = "";
-                int pos = 0;
-                while (pos < responseBytes.length) {
-                    long[] tagResult = readVarint(responseBytes, pos);
-                    pos = (int) tagResult[1];
-                    int fieldNum = (int) (tagResult[0] >>> 3);
-                    int wireType = (int) (tagResult[0] & 0x7);
-                    if (wireType == 0) {
-                        long[] valResult = readVarint(responseBytes, pos);
-                        pos = (int) valResult[1];
-                        if (fieldNum == 1) allowed = valResult[0] != 0;
-                    } else if (wireType == 2) {
-                        long[] lenResult = readVarint(responseBytes, pos);
-                        int len = (int) lenResult[0];
-                        pos = (int) lenResult[1];
-                        String s = new String(responseBytes, pos, len, StandardCharsets.UTF_8);
-                        pos += len;
-                        if (fieldNum == 2) reason = s;
-                    }
-                }
-                return new EgressDecision(allowed, reason);
-            } catch (Exception e) {
-                log.warn("[coresdk] checkEgress fail-open: {}", e.getMessage());
-                return new EgressDecision(true, "sidecar unreachable (fail-open)");
-            }
+            // No gRPC stub for CheckEgress yet — fall through to fail-open.
+            log.warn("[coresdk] checkEgress: no sidecar gRPC path configured, returning fail-open");
+            return new EgressDecision(true, "sidecar unreachable (fail-open)");
         });
     }
 
