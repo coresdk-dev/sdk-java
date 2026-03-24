@@ -24,6 +24,7 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -668,6 +669,243 @@ public class CoreSDK {
                 }
                 log.warn("[coresdk] isRevoked fail-open: {}", e.getMessage());
                 return false;
+            }
+        });
+    }
+
+    // ---- Explain Authorize ----
+
+    /**
+     * Authorize a token and return a structured explanation of why it was allowed or denied.
+     * Wraps {@link #authorize(String, String, String)} and enriches the result into an
+     * {@link ExplainResult}.
+     */
+    public CompletableFuture<ExplainResult> explainAuthorize(String token, String path, String action) {
+        return authorize(token, path, action)
+            .thenApply(decision -> {
+                ExplainResult result = new ExplainResult();
+                result.setOutcome(decision.isAllowed() ? "allowed" : "denied");
+                Map<String, Object> auth = new HashMap<>();
+                auth.put("allowed", decision.isAllowed());
+                if (decision.getReason() != null) {
+                    auth.put("reason", decision.getReason());
+                }
+                if (decision.getClaims() != null) {
+                    auth.put("subject", decision.getClaims().getSub());
+                }
+                result.setAuth(auth);
+                return result;
+            })
+            .exceptionally(ex -> {
+                ExplainResult result = new ExplainResult();
+                result.setOutcome("denied");
+                Map<String, Object> auth = new HashMap<>();
+                auth.put("error", ex.getMessage());
+                result.setAuth(auth);
+                return result;
+            });
+    }
+
+    // ---- Agent Token ----
+
+    /**
+     * Mint a short-lived scoped JWT for agent-to-agent delegation.
+     * Calls {@code POST /api/v1/agent-token} on the control plane, or the sidecar gRPC
+     * {@code MintAgentToken} RPC if no control plane URL is configured.
+     *
+     * @param parentToken    the caller's existing bearer token
+     * @param targetService  the downstream service identifier
+     * @param scopes         list of permission scopes to grant
+     * @param ttlSeconds     requested token lifetime; capped at 300 s server-side
+     */
+    public CompletableFuture<AgentToken> mintAgentToken(
+            String parentToken, String targetService, List<String> scopes, int ttlSeconds) {
+        return CompletableFuture.supplyAsync(() -> {
+            // Prefer control plane REST if configured; otherwise fall back to gRPC stub.
+            String controlPlaneUrl = config.getControlPlaneUrl();
+            if (controlPlaneUrl != null && !controlPlaneUrl.isBlank()) {
+                try {
+                    String base = stripTrailingSlash(controlPlaneUrl);
+                    // Build a minimal JSON body without an external dependency.
+                    StringBuilder scopeArray = new StringBuilder("[");
+                    if (scopes != null && !scopes.isEmpty()) {
+                        for (int i = 0; i < scopes.size(); i++) {
+                            if (i > 0) scopeArray.append(",");
+                            scopeArray.append("\"").append(scopes.get(i).replace("\"", "\\\"")).append("\"");
+                        }
+                    }
+                    scopeArray.append("]");
+                    String body = String.format(
+                        "{\"parent_token\":\"%s\",\"target_service\":\"%s\",\"scopes\":%s,\"ttl_seconds\":%d,\"tenant_id\":\"%s\"}",
+                        parentToken != null ? parentToken : "",
+                        targetService != null ? targetService : "",
+                        scopeArray,
+                        Math.min(ttlSeconds, 300),
+                        config.getTenantId() != null ? config.getTenantId() : ""
+                    );
+                    HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(base + "/api/v1/agent-token"))
+                        .timeout(Duration.ofSeconds(5))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(body))
+                        .build();
+                    HttpResponse<String> response =
+                        HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+                    if (response.statusCode() >= 400) {
+                        throw new CoreSDKException(new ProblemDetail(
+                            "https://coresdk.io/errors/agent-token-error",
+                            "Agent Token Error", response.statusCode()));
+                    }
+                    com.fasterxml.jackson.databind.JsonNode json = MAPPER.readTree(response.body());
+                    String issuedToken = json.path("token").asText("");
+                    int expires = json.path("expires_in_seconds").asInt(300);
+                    List<String> chain = new ArrayList<>();
+                    com.fasterxml.jackson.databind.JsonNode chainNode = json.path("agent_chain");
+                    if (chainNode.isArray()) {
+                        chainNode.forEach(n -> chain.add(n.asText()));
+                    }
+                    return new AgentToken(issuedToken, expires, chain);
+                } catch (CoreSDKException cse) {
+                    throw cse;
+                } catch (Exception e) {
+                    if ("closed".equals(config.getFailMode())) {
+                        throw new CoreSDKException(new ProblemDetail(
+                            "https://coresdk.io/errors/internal", "Internal Error", 500), e);
+                    }
+                    log.warn("[coresdk] mintAgentToken fail-open: {}", e.getMessage());
+                    return new AgentToken();
+                }
+            }
+            // gRPC path: encode MintAgentToken request and call stub.
+            try {
+                AuthServiceGrpc.BlockingStub stub = getGrpcStub();
+                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                writeString(buf, 1, parentToken);
+                writeString(buf, 2, targetService);
+                if (scopes != null) {
+                    for (String scope : scopes) {
+                        writeString(buf, 3, scope);
+                    }
+                }
+                // field 4: ttl_seconds as varint
+                int cappedTtl = Math.min(ttlSeconds, 300);
+                writeVarint(buf, ((long) 4 << 3) | 0L); // field 4, wire type 0
+                writeVarint(buf, cappedTtl);
+                writeString(buf, 5, config.getTenantId() != null ? config.getTenantId() : "");
+                byte[] responseBytes = stub.mintAgentToken(buf.toByteArray());
+                // Decode: field 1=token(string), field 2=expires_in_seconds(varint), field 3=agent_chain(repeated string)
+                String issuedToken = "";
+                int expires = 300;
+                List<String> chain = new ArrayList<>();
+                int pos = 0;
+                while (pos < responseBytes.length) {
+                    long[] tagResult = readVarint(responseBytes, pos);
+                    pos = (int) tagResult[1];
+                    int fieldNum = (int) (tagResult[0] >>> 3);
+                    int wireType = (int) (tagResult[0] & 0x7);
+                    if (wireType == 0) {
+                        long[] valResult = readVarint(responseBytes, pos);
+                        pos = (int) valResult[1];
+                        if (fieldNum == 2) expires = (int) valResult[0];
+                    } else if (wireType == 2) {
+                        long[] lenResult = readVarint(responseBytes, pos);
+                        int len = (int) lenResult[0];
+                        pos = (int) lenResult[1];
+                        String s = new String(responseBytes, pos, len, StandardCharsets.UTF_8);
+                        pos += len;
+                        if (fieldNum == 1) issuedToken = s;
+                        else if (fieldNum == 3) chain.add(s);
+                    }
+                }
+                return new AgentToken(issuedToken, expires, chain);
+            } catch (CoreSDKException cse) {
+                throw cse;
+            } catch (Exception e) {
+                if ("closed".equals(config.getFailMode())) {
+                    throw new CoreSDKException(new ProblemDetail(
+                        "https://coresdk.io/errors/internal", "Internal Error", 500), e);
+                }
+                log.warn("[coresdk] mintAgentToken fail-open: {}", e.getMessage());
+                return new AgentToken();
+            }
+        });
+    }
+
+    // ---- Egress Check ----
+
+    /**
+     * Check whether an outbound URL is safe to fetch (SSRF protection).
+     * Returns {@code allowed=true} if the sidecar is unreachable (fail-open).
+     *
+     * @param url the full URL the caller intends to fetch
+     */
+    public CompletableFuture<EgressDecision> checkEgress(String url) {
+        return CompletableFuture.supplyAsync(() -> {
+            // Prefer control plane REST if configured.
+            String controlPlaneUrl = config.getControlPlaneUrl();
+            if (controlPlaneUrl != null && !controlPlaneUrl.isBlank()) {
+                try {
+                    String base = stripTrailingSlash(controlPlaneUrl);
+                    String body = String.format(
+                        "{\"url\":\"%s\",\"tenant_id\":\"%s\"}",
+                        url != null ? url.replace("\"", "\\\"") : "",
+                        config.getTenantId() != null ? config.getTenantId() : ""
+                    );
+                    HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(base + "/api/v1/egress/check"))
+                        .timeout(Duration.ofSeconds(5))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(body))
+                        .build();
+                    HttpResponse<String> response =
+                        HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+                    if (response.statusCode() >= 400) {
+                        // Treat server-side errors as fail-open to avoid blocking callers.
+                        log.warn("[coresdk] checkEgress HTTP {}: fail-open", response.statusCode());
+                        return new EgressDecision(true, "control-plane error (fail-open)");
+                    }
+                    com.fasterxml.jackson.databind.JsonNode json = MAPPER.readTree(response.body());
+                    boolean allowed = json.path("allowed").asBoolean(true);
+                    String reason = json.path("reason").asText("");
+                    return new EgressDecision(allowed, reason);
+                } catch (Exception e) {
+                    log.warn("[coresdk] checkEgress fail-open: {}", e.getMessage());
+                    return new EgressDecision(true, "sidecar unreachable (fail-open)");
+                }
+            }
+            // gRPC path: call coresdk.v1.EgressService/CheckEgress via stub.
+            try {
+                AuthServiceGrpc.BlockingStub stub = getGrpcStub();
+                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                writeString(buf, 1, url);
+                writeString(buf, 2, config.getTenantId() != null ? config.getTenantId() : "");
+                byte[] responseBytes = stub.checkEgress(buf.toByteArray());
+                // Decode: field 1=allowed(varint bool), field 2=reason(string)
+                boolean allowed = true;
+                String reason = "";
+                int pos = 0;
+                while (pos < responseBytes.length) {
+                    long[] tagResult = readVarint(responseBytes, pos);
+                    pos = (int) tagResult[1];
+                    int fieldNum = (int) (tagResult[0] >>> 3);
+                    int wireType = (int) (tagResult[0] & 0x7);
+                    if (wireType == 0) {
+                        long[] valResult = readVarint(responseBytes, pos);
+                        pos = (int) valResult[1];
+                        if (fieldNum == 1) allowed = valResult[0] != 0;
+                    } else if (wireType == 2) {
+                        long[] lenResult = readVarint(responseBytes, pos);
+                        int len = (int) lenResult[0];
+                        pos = (int) lenResult[1];
+                        String s = new String(responseBytes, pos, len, StandardCharsets.UTF_8);
+                        pos += len;
+                        if (fieldNum == 2) reason = s;
+                    }
+                }
+                return new EgressDecision(allowed, reason);
+            } catch (Exception e) {
+                log.warn("[coresdk] checkEgress fail-open: {}", e.getMessage());
+                return new EgressDecision(true, "sidecar unreachable (fail-open)");
             }
         });
     }

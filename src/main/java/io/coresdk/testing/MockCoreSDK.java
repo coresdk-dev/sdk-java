@@ -3,6 +3,7 @@ package io.coresdk.testing;
 import io.coresdk.*;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -63,6 +64,26 @@ public class MockCoreSDK extends CoreSDK {
     @Override
     public CompletableFuture<Boolean> isRevoked(String token) {
         return CompletableFuture.completedFuture(false);
+    }
+
+    @Override
+    public CompletableFuture<ExplainResult> explainAuthorize(String token, String path, String action) {
+        return CompletableFuture.completedFuture(new ExplainResult(
+            "allowed",
+            Map.of("allowed", defaultAllow, "subject", defaultClaims.getSub())));
+    }
+
+    @Override
+    public CompletableFuture<AgentToken> mintAgentToken(String parentToken, String targetService,
+                                                         List<String> scopes, int ttlSeconds) {
+        return CompletableFuture.completedFuture(
+            new AgentToken("mock.agent.token", 300,
+                Arrays.asList(parentToken, targetService)));
+    }
+
+    @Override
+    public CompletableFuture<EgressDecision> checkEgress(String url) {
+        return CompletableFuture.completedFuture(new EgressDecision(true, "mock-allowed"));
     }
 
     public List<String> getAuthorizeCalls() { return List.copyOf(authorizeCalls); }
