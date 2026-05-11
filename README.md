@@ -110,3 +110,37 @@ See the [Getting Started guide](GETTING-STARTED.md) for the full setup walkthrou
 |------|------|-------------|
 | `coreSDK` | `CoreSDK` | Pre-configured SDK client |
 | `coreSDKFilter` | `FilterRegistrationBean` | JWT filter on `/api/*` |
+
+## Jobs (containerised long-running work)
+
+`CoreSDK.jobs()` exposes a `JobsClient` for async K8s-backed container
+workloads with RBAC-gated secret injection.
+
+```java
+@Autowired CoreSDK sdk;
+
+Job job = sdk.jobs().submitJob(new SubmitJobRequest()
+    .setKind("claude-cli")
+    .setImage("ghcr.io/zysec/cpod-claude-cli:latest")
+    .setCommand(List.of("claude"))
+    .setInlineFiles(Map.of("prompt.md", "hi".getBytes()))
+    .setSecretBundles(List.of("anthropic-prod"))
+    .setUserId("alice@example.com")
+    .setTimeoutSeconds(600)
+).get();
+
+Job terminal = sdk.jobs()
+    .watchJob(job.getJobId(), update -> System.out.println(update.getState()))
+    .get();
+```
+
+> **Transport note:** the Java SDK talks to the control plane's REST
+> surface (`/api/v1/jobs`) rather than the sidecar's gRPC endpoint,
+> mirroring the existing pattern for the other 9 services. `watchJob`
+> polls `GET /api/v1/jobs/{id}` every 2s by default (configurable via
+> the `JobsClient(CoreSDKConfig, Duration)` constructor). For
+> low-latency event delivery, prefer the gRPC SDKs (Python / Go /
+> TypeScript).
+
+Requires `CORESDK_CONTROL_PLANE_URL` (and `CORESDK_CONTROL_PLANE_TOKEN`
+if the control plane has API-key auth enabled).
