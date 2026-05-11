@@ -860,6 +860,28 @@ public class CoreSDK {
         return new long[]{result, pos};
     }
 
+    private volatile JobsClient jobsClient;
+
+    /**
+     * Lazily-constructed {@link JobsClient} for the {@code JobService} REST
+     * surface. Reuses the SDK's {@link CoreSDKConfig} and is cached per SDK
+     * instance. The first call builds the client; subsequent calls return
+     * the cached one.
+     */
+    public JobsClient jobs() {
+        JobsClient j = jobsClient;
+        if (j == null) {
+            synchronized (this) {
+                j = jobsClient;
+                if (j == null) {
+                    j = new JobsClient(config);
+                    jobsClient = j;
+                }
+            }
+        }
+        return j;
+    }
+
     public CoreSDKConfig getConfig() { return config; }
 
     /** Shut down the gRPC channel gracefully. */
